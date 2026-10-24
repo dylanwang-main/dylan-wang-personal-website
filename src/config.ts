@@ -96,9 +96,11 @@ export const DRIFT_CONFIG = {
   sectionUnfocusedRetreatZ: -4.5, // Distance non-section cards retreat
 
   // --- BOTTOM SECTION WHEEL TUNING ---
-  wheelSensitivity: 0.0028, // Inertia rotation per wheel delta / drag px
-  wheelSnapStrength: 0.08, // Spring snap tightness to nearest segment
-  wheelInertiaDamping: 0.93, // Decay per frame when spun with velocity
+  wheelSensitivity: 0.0028, // Higher = a smaller scroll flick is enough to step one section
+  wheelSnapStrength: 0.08, // Spring tightness when the wheel settles on a section
+  wheelInertiaDamping: 0.93, // How far a drag-and-release fling carries before settling
+  wheelStepCooldownMs: 380, // Minimum time between scroll steps (stops trackpad momentum skipping sections)
+  wheelVisibleFraction: 0.4, // How much of the wheel's height shows above the bottom edge (rest is clipped)
 };
 
 /**

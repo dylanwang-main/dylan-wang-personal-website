@@ -14,8 +14,16 @@ interface SectionWheelProps {
   isMobile: boolean;
 }
 
-const SEGMENT_COUNT = 6;
-const SEGMENT_ANGLE = (2 * Math.PI) / SEGMENT_COUNT; // 60 degrees in radians
+const SEGMENT_COUNT = SECTIONS.length;
+const SEGMENT_ANGLE = (2 * Math.PI) / SEGMENT_COUNT;
+const DRAG_THRESHOLD_PX = 6;
+
+const mod = (n: number, m: number) => ((n % m) + m) % m;
+// Wrap an angle difference into (-PI, PI]
+const wrapPi = (rad: number) => Math.atan2(Math.sin(rad), Math.cos(rad));
+// Nearest whole-segment index (unbounded, so the wheel never spins the long way round)
+const indexForAngle = (rad: number) => Math.round(-rad / SEGMENT_ANGLE);
+const sectionIndexForAngle = (rad: number) => mod(indexForAngle(rad), SEGMENT_COUNT);
 
 export function SectionWheel({
   activeSection,
@@ -24,134 +32,181 @@ export function SectionWheel({
   config,
   isMobile,
 }: SectionWheelProps) {
-  // Current wheel rotation in radians
+  // Rendered angle, spring target (always a whole number of segments), spring velocity
   const angleRef = useRef<number>(0);
+  const targetRef = useRef<number>(0);
   const velocityRef = useRef<number>(0);
-  const isDraggingRef = useRef<boolean>(false);
-  const dragStartAngleRef = useRef<number>(0);
-  const dragAngleOffsetRef = useRef<number>(0);
-  const lastDragTimeRef = useRef<number>(0);
-  const lastDragAngleRef = useRef<number>(0);
 
-  // Active index at the top
-  const activeIndex = SECTIONS.indexOf(activeSection);
+  // Pointer drag state
+  const isDraggingRef = useRef<boolean>(false);
+  const movedRef = useRef<boolean>(false);
+  const capturedRef = useRef<boolean>(false);
+  const dragStartXYRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const lastPointerAngleRef = useRef<number>(0);
+  const lastPointerTimeRef = useRef<number>(0);
+
+  // Mouse-wheel gesture state (one gesture = one step)
+  const gestureRef = useRef({ lastTime: 0, lastAbs: 0, lockUntil: 0, consumed: false });
+
+  // Last section we reported upward, to avoid duplicate onSelectSection calls
+  const lastSectionIndexRef = useRef<number>(Math.max(0, SECTIONS.indexOf(activeSection)));
+
   const [displayAngle, setDisplayAngle] = useState(0);
   const [pulsingIndex, setPulsingIndex] = useState<number | null>(null);
 
-  // Wheel container element for geometry calculation
   const wheelRef = useRef<HTMLDivElement>(null);
 
-  // Helper to normalize angle to [0, 2π)
-  const normalize = (rad: number) => {
-    const twoPi = Math.PI * 2;
-    return ((rad % twoPi) + twoPi) % twoPi;
-  };
+  // Always-fresh props for long-lived handlers
+  const latest = useRef({ onSelectSection, onOpenSectionDetail, config });
+  latest.current = { onSelectSection, onOpenSectionDetail, config };
 
-  // Determine current top section index from rotation angle
-  const getTopIndex = useCallback((rad: number): number => {
-    // Top position corresponds to -rad
-    const norm = normalize(-rad);
-    // Each segment covers [index * angle - angle/2, index * angle + angle/2]
-    const index = Math.round(norm / SEGMENT_ANGLE) % SEGMENT_COUNT;
-    return index;
+  const pulse = useCallback((idx: number) => {
+    setPulsingIndex(idx);
+    window.setTimeout(() => setPulsingIndex((curr) => (curr === idx ? null : curr)), 280);
   }, []);
 
-  // Soft snap to a specific section index
-  const snapToSection = useCallback((index: number) => {
-    const target = -index * SEGMENT_ANGLE;
-    // Find closest representation to current angle to prevent full 360 spins
-    const current = angleRef.current;
-    const diff = ((((target - current) % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-    const resolvedTarget = current + diff;
-    velocityRef.current = diff * 0.15;
-    angleRef.current = current;
+  // Report a new top section upward (and pulse its label) once per change
+  const commitSection = useCallback(
+    (idx: number) => {
+      if (lastSectionIndexRef.current === idx) return;
+      lastSectionIndexRef.current = idx;
+      latest.current.onSelectSection(SECTIONS[idx]);
+      pulse(idx);
+    },
+    [pulse]
+  );
+
+  // Move the spring target by whole segments (+1 = next section)
+  const stepBy = useCallback(
+    (n: number) => {
+      const k = indexForAngle(targetRef.current) + n;
+      targetRef.current = -k * SEGMENT_ANGLE;
+      commitSection(mod(k, SEGMENT_COUNT));
+    },
+    [commitSection]
+  );
+
+  // Aim the spring at a given section by the shortest route
+  const retarget = useCallback((idx: number) => {
+    const kCur = indexForAngle(targetRef.current);
+    const half = SEGMENT_COUNT / 2;
+    const diff = mod(idx - kCur + half, SEGMENT_COUNT) - half;
+    targetRef.current = -(kCur + diff) * SEGMENT_ANGLE;
   }, []);
 
-  // Synchronize when activeSection prop changes from external source
+  const goToSection = useCallback(
+    (idx: number) => {
+      retarget(idx);
+      commitSection(idx);
+    },
+    [retarget, commitSection]
+  );
+
+  // Follow external changes to the active section (e.g. other UI selecting a section)
   useEffect(() => {
-    const targetIdx = SECTIONS.indexOf(activeSection);
-    if (getTopIndex(angleRef.current) !== targetIdx) {
-      snapToSection(targetIdx);
+    if (isDraggingRef.current) return;
+    const idx = SECTIONS.indexOf(activeSection);
+    if (idx === -1) return;
+    if (sectionIndexForAngle(targetRef.current) !== idx) {
+      retarget(idx);
+      lastSectionIndexRef.current = idx;
     }
-  }, [activeSection, getTopIndex, snapToSection]);
+  }, [activeSection, retarget]);
 
-  // Inertia and Soft Snap Animation Loop
+  // Spring animation toward the target. Critically damped, so it settles on a section without bounce.
   useEffect(() => {
-    let animId: number;
-    let lastTopIndex = activeIndex;
+    let raf = 0;
+    let last = performance.now();
+    let shown = angleRef.current;
 
-    const tick = () => {
+    const tick = (now: number) => {
+      const f = Math.min(3, (now - last) / 16.667);
+      last = now;
+
       if (!isDraggingRef.current) {
-        // Apply inertia decay
-        velocityRef.current *= config.wheelInertiaDamping;
+        const k = latest.current.config.wheelSnapStrength;
+        const damping = 1 / Math.pow(1 + Math.sqrt(k), 2);
+        const err = targetRef.current - angleRef.current;
 
-        // When velocity slows, apply soft snap to nearest segment
-        if (Math.abs(velocityRef.current) < 0.003) {
-          const nearestIndex = getTopIndex(angleRef.current);
-          const target = -nearestIndex * SEGMENT_ANGLE;
-          const current = angleRef.current;
-          const diff = ((((target - current) % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+        velocityRef.current += err * k * f;
+        velocityRef.current *= Math.pow(damping, f);
+        angleRef.current += velocityRef.current * f;
 
-          // Soft spring pull
-          velocityRef.current += diff * config.wheelSnapStrength;
-          velocityRef.current *= 0.82; // Damping
-        }
-
-        angleRef.current += velocityRef.current;
-
-        // Detect segment tick passing top
-        const currentTopIndex = getTopIndex(angleRef.current);
-        if (currentTopIndex !== lastTopIndex) {
-          lastTopIndex = currentTopIndex;
-          onSelectSection(SECTIONS[currentTopIndex]);
-          setPulsingIndex(currentTopIndex);
-          setTimeout(() => setPulsingIndex((curr) => (curr === currentTopIndex ? null : curr)), 280);
+        if (Math.abs(err) < 1e-4 && Math.abs(velocityRef.current) < 1e-4) {
+          angleRef.current = targetRef.current;
+          velocityRef.current = 0;
         }
       }
 
-      setDisplayAngle(angleRef.current);
-      animId = requestAnimationFrame(tick);
+      if (Math.abs(angleRef.current - shown) > 1e-5) {
+        shown = angleRef.current;
+        setDisplayAngle(shown);
+      }
+      raf = requestAnimationFrame(tick);
     };
 
-    animId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animId);
-  }, [config.wheelInertiaDamping, config.wheelSnapStrength, getTopIndex, onSelectSection, activeIndex]);
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
-  // Arrow Key Navigation (Left / Right) & Enter to open
+  // Arrow keys step one section at a time, Enter opens the active section
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't intercept if user is typing in an input
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
 
       if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
         e.preventDefault();
-        const nextIdx = (activeIndex + 1) % SEGMENT_COUNT;
-        onSelectSection(SECTIONS[nextIdx]);
-        snapToSection(nextIdx);
+        stepBy(1);
       } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
         e.preventDefault();
-        const prevIdx = (activeIndex - 1 + SEGMENT_COUNT) % SEGMENT_COUNT;
-        onSelectSection(SECTIONS[prevIdx]);
-        snapToSection(prevIdx);
+        stepBy(-1);
       } else if (e.key === 'Enter') {
         e.preventDefault();
-        onOpenSectionDetail(activeSection);
+        latest.current.onOpenSectionDetail(SECTIONS[sectionIndexForAngle(targetRef.current)]);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeIndex, activeSection, onSelectSection, snapToSection, onOpenSectionDetail]);
+  }, [stepBy]);
 
-  // Mouse Wheel over wheel: rotates wheel ONLY, stops camera drift
+  // Mouse wheel / trackpad over the wheel: exactly one section per gesture.
+  // Trackpad momentum and fast mouse spins are swallowed until the gesture ends.
   const handleWheel = (e: React.WheelEvent) => {
     e.stopPropagation();
-    // Delta in radians
-    const delta = e.deltaY * config.wheelSensitivity;
-    velocityRef.current += delta;
+
+    const unit = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
+    const rawY = e.deltaY * unit;
+    const rawX = e.deltaX * unit;
+    const delta = Math.abs(rawY) >= Math.abs(rawX) ? rawY : rawX;
+    const abs = Math.abs(delta);
+
+    const g = gestureRef.current;
+    const cfg = latest.current.config;
+    // Use the event's own timestamp so a busy main thread (slow frames) can't make one
+    // gesture look like several. Fall back to the clock if the browser uses epoch time.
+    const now = e.timeStamp > 0 && e.timeStamp < 1e12 ? e.timeStamp : performance.now();
+
+    // A new gesture starts after a pause, or when the scroll speed jumps back up
+    const gap = now - g.lastTime;
+    const isFresh = gap > 140 || abs > g.lastAbs * 1.35 + 2;
+    g.lastTime = now;
+    g.lastAbs = abs;
+
+    if (isFresh && now >= g.lockUntil) g.consumed = false;
+    if (g.consumed || now < g.lockUntil) return;
+
+    // Higher wheelSensitivity = smaller flick needed
+    const minDelta = 0.016 / cfg.wheelSensitivity;
+    if (abs < minDelta) return;
+
+    g.consumed = true;
+    g.lockUntil = now + cfg.wheelStepCooldownMs;
+    stepBy(delta > 0 ? 1 : -1);
   };
 
-  // Pointer Drag interactions (Desktop drag & Mobile touch)
+  // Pointer drag (mouse and touch). Pointer capture only starts after a real drag,
+  // so plain clicks on labels still work.
   const getPointerAngle = (clientX: number, clientY: number) => {
     if (!wheelRef.current) return 0;
     const rect = wheelRef.current.getBoundingClientRect();
@@ -160,88 +215,112 @@ export function SectionWheel({
     return Math.atan2(clientY - centerY, clientX - centerX);
   };
 
-  const handlePointerDown = (e: React.PointerEvent) => {
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.stopPropagation();
     isDraggingRef.current = true;
-    const curAngle = getPointerAngle(e.clientX, e.clientY);
-    dragStartAngleRef.current = curAngle;
-    dragAngleOffsetRef.current = angleRef.current;
-    lastDragTimeRef.current = performance.now();
-    lastDragAngleRef.current = curAngle;
+    movedRef.current = false;
+    capturedRef.current = false;
+    dragStartXYRef.current = { x: e.clientX, y: e.clientY };
+    lastPointerAngleRef.current = getPointerAngle(e.clientX, e.clientY);
+    lastPointerTimeRef.current = performance.now();
     velocityRef.current = 0;
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
   };
 
-  const handlePointerMove = (e: React.PointerEvent) => {
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!isDraggingRef.current) return;
     e.stopPropagation();
-    const curAngle = getPointerAngle(e.clientX, e.clientY);
-    const diff = curAngle - dragStartAngleRef.current;
-    angleRef.current = dragAngleOffsetRef.current + diff;
 
-    // Track drag velocity for inertia on release
-    const now = performance.now();
-    const dt = Math.max(1, now - lastDragTimeRef.current);
-    const dAngle = curAngle - lastDragAngleRef.current;
-    velocityRef.current = (dAngle / dt) * 16;
-    lastDragTimeRef.current = now;
-    lastDragAngleRef.current = curAngle;
-
-    // Tick detection while dragging
-    const currentTop = getTopIndex(angleRef.current);
-    if (currentTop !== activeIndex) {
-      onSelectSection(SECTIONS[currentTop]);
-      setPulsingIndex(currentTop);
+    if (!movedRef.current) {
+      const dx = e.clientX - dragStartXYRef.current.x;
+      const dy = e.clientY - dragStartXYRef.current.y;
+      if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+      movedRef.current = true;
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        capturedRef.current = true;
+      } catch {
+        // Capture is a nicety, dragging still works without it
+      }
     }
+
+    const pointerAngle = getPointerAngle(e.clientX, e.clientY);
+    const dAngle = wrapPi(pointerAngle - lastPointerAngleRef.current);
+    angleRef.current += dAngle;
+
+    // Smoothed drag velocity (rad per frame) for the release fling
+    const now = performance.now();
+    const dt = Math.max(1, now - lastPointerTimeRef.current);
+    velocityRef.current = velocityRef.current * 0.6 + ((dAngle / dt) * 16.667) * 0.4;
+    lastPointerTimeRef.current = now;
+    lastPointerAngleRef.current = pointerAngle;
+
+    commitSection(sectionIndexForAngle(angleRef.current));
   };
 
-  const handlePointerUp = (e: React.PointerEvent) => {
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!isDraggingRef.current) return;
     e.stopPropagation();
     isDraggingRef.current = false;
-    try {
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {
-      // Ignore if pointer capture was lost
+
+    if (capturedRef.current) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        // Ignore if capture was already lost
+      }
+      capturedRef.current = false;
     }
+
+    // Plain click: leave the target alone, the label's onClick handles it
+    if (!movedRef.current) return;
+
+    // Fling: project forward a little, then settle on a whole section (max 2 segments away)
+    const d = latest.current.config.wheelInertiaDamping;
+    const projected = angleRef.current + velocityRef.current * (d / (1 - d));
+    const startK = indexForAngle(angleRef.current);
+    const k = Math.max(startK - 2, Math.min(startK + 2, indexForAngle(projected)));
+    targetRef.current = -k * SEGMENT_ANGLE;
+    commitSection(mod(k, SEGMENT_COUNT));
   };
 
-  // Dimensions
+  // Dimensions: the wheel is a full circle whose lower part is clipped by the viewport bottom edge
   const wheelDiameter = isMobile ? 320 : 540;
   const radius = wheelDiameter / 2;
   const innerRadius = radius * 0.44;
   const rimRadius = radius * 0.78;
+  const visibleHeight = wheelDiameter * config.wheelVisibleFraction;
 
   return (
     <div
-      className="absolute bottom-0 left-1/2 -translate-x-1/2 pointer-events-auto select-none touch-none z-20 flex flex-col items-center"
+      className="absolute bottom-0 left-1/2 -translate-x-1/2 pointer-events-none select-none z-[5]"
       style={{
         width: `${wheelDiameter}px`,
-        height: `${wheelDiameter * 0.58}px`, // ~60% visible above viewport bottom
+        height: `${visibleHeight}px`,
         overflow: 'visible',
       }}
-      onWheel={handleWheel}
     >
-      {/* Subtle indicator dot at the top center apex */}
-      <div className="absolute -top-3 left-1/2 -translate-x-1/2 flex flex-col items-center z-30 pointer-events-none">
+      {/* Subtle indicator dot at the top apex */}
+      <div className="absolute -top-3 left-1/2 -translate-x-1/2 flex flex-col items-center z-10 pointer-events-none">
         <div className="w-1.5 h-1.5 rounded-full bg-neutral-900 mb-1" />
         <span className="text-[9px] font-mono tracking-widest uppercase text-neutral-400">
           ACTIVE
         </span>
       </div>
 
-      {/* SVG ROTATING WHEEL */}
+      {/* Circular hit area, anchored by its top edge so everything below the viewport is clipped */}
       <div
         ref={wheelRef}
+        data-no-drift-scroll="true"
+        onWheel={handleWheel}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
-        className="cursor-grab active:cursor-grabbing w-full h-full relative"
+        className="absolute left-0 top-0 pointer-events-auto touch-none"
         style={{
           width: `${wheelDiameter}px`,
           height: `${wheelDiameter}px`,
-          marginTop: `-${wheelDiameter * 0.42}px`,
+          borderRadius: '50%',
         }}
       >
         <svg
@@ -283,7 +362,7 @@ export function SectionWheel({
             strokeDasharray="3 3"
           />
 
-          {/* 6 Radial Divider Lines */}
+          {/* Radial Divider Lines */}
           {Array.from({ length: SEGMENT_COUNT }).map((_, i) => {
             const angle = i * SEGMENT_ANGLE - Math.PI / 2 + SEGMENT_ANGLE / 2;
             const x1 = radius + innerRadius * Math.cos(angle);
@@ -304,21 +383,19 @@ export function SectionWheel({
             );
           })}
 
-          {/* 6 Segment Labels Along the Rim */}
+          {/* Segment Labels Along the Rim */}
           {SECTIONS.map((section, idx) => {
-            // Label angle around circle (top is -90 deg / -π/2)
             const segmentBaseAngle = idx * SEGMENT_ANGLE - Math.PI / 2;
             const x = radius + rimRadius * Math.cos(segmentBaseAngle);
             const y = radius + rimRadius * Math.sin(segmentBaseAngle);
 
-            // Compute current apparent angular distance to top apex
-            const currentWorldAngle = normalize(displayAngle + idx * SEGMENT_ANGLE);
-            // Distance from top (0 or 2π)
+            // Angular distance of this label from the top apex
+            const currentWorldAngle = mod(displayAngle + idx * SEGMENT_ANGLE, 2 * Math.PI);
             const distFromTop = Math.min(currentWorldAngle, 2 * Math.PI - currentWorldAngle);
             const isCurrentlyActive = distFromTop < SEGMENT_ANGLE * 0.45;
             const isPulsing = pulsingIndex === idx;
 
-            // Rotation for text to follow the rim orientation
+            // Rotate text to follow the rim
             const textAngleDeg = (segmentBaseAngle * 180) / Math.PI + 90;
 
             return (
@@ -327,25 +404,21 @@ export function SectionWheel({
                 transform={`translate(${x}, ${y}) rotate(${textAngleDeg})`}
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (isCurrentlyActive) {
-                    onOpenSectionDetail(section);
+                  // Ignore the click that ends a drag
+                  if (movedRef.current) return;
+                  if (idx === sectionIndexForAngle(targetRef.current)) {
+                    latest.current.onOpenSectionDetail(section);
                   } else {
-                    snapToSection(idx);
+                    goToSection(idx);
                   }
                 }}
-                className="cursor-pointer transition-transform duration-150"
+                className="transition-transform duration-150"
                 style={{
                   transformOrigin: '0 0',
                 }}
               >
                 {/* Click target hitbox */}
-                <rect
-                  x={-60}
-                  y={-20}
-                  width={120}
-                  height={40}
-                  fill="transparent"
-                />
+                <rect x={-60} y={-20} width={120} height={40} fill="transparent" />
 
                 {/* Section Label Text */}
                 <text

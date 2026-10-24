@@ -22,6 +22,15 @@
   }
 }
 
+/* Hide the system cursor everywhere (including over buttons, sliders, the wheel and overlays).
+   CustomCursor adds this class to <html> while it is drawing the replacement. */
+html.has-custom-cursor,
+html.has-custom-cursor *,
+html.has-custom-cursor *::before,
+html.has-custom-cursor *::after {
+  cursor: none !important;
+}
+
 /* Custom subtle scrollbar if needed */
 ::-webkit-scrollbar {
   width: 4px;

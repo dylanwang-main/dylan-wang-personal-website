@@ -15,6 +15,15 @@ export function CustomCursor({ hoveredCard, isTouchDevice }: CustomCursorProps) 
   const [pos, setPos] = useState({ x: -100, y: -100 });
   const [isVisible, setIsVisible] = useState(false);
 
+  // Hide the system cursor everywhere (see index.css) only while this custom cursor is active,
+  // so touch and hybrid devices never end up with no cursor at all.
+  useEffect(() => {
+    if (isTouchDevice) return;
+    const root = document.documentElement;
+    root.classList.add('has-custom-cursor');
+    return () => root.classList.remove('has-custom-cursor');
+  }, [isTouchDevice]);
+
   useEffect(() => {
     if (isTouchDevice) return;
 
@@ -42,7 +51,7 @@ export function CustomCursor({ hoveredCard, isTouchDevice }: CustomCursorProps) 
 
   return (
     <div
-      className="pointer-events-none fixed z-50 transition-transform duration-75 ease-out select-none"
+      className="pointer-events-none fixed z-[9999] transition-transform duration-75 ease-out select-none"
       style={{
         left: `${pos.x}px`,
         top: `${pos.y}px`,
