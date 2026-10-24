@@ -1,6 +1,8 @@
 {
-  "name": "Floating 3D Photo Drift",
-  "description": "A tactile, visual prototype of a floating 3D photo drift field for personal websites with smooth parallax and scroll kinematics.",
+  "name": "Dylan Wang Personal Website",
+  "description": "Dylan Wang Personal Website",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

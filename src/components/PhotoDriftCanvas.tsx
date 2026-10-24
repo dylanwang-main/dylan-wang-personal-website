@@ -6,19 +6,21 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { DRIFT_CONFIG, PHOTO_CARDS } from '../config';
+import { DRIFT_CONFIG, PHOTO_CARDS, PhotoCardItem } from '../config';
 import { computeCardAnchors } from '../utils/textureLoader';
 import { PhotoCard3D } from './PhotoCard3D';
 
 interface PhotoDriftCanvasProps {
-  onCardClickNotice: (title: string) => void;
+  activeSection: string;
+  onHoveredCardChange: (card: PhotoCardItem | null) => void;
+  onSelectCardDetail: (card: PhotoCardItem) => void;
   isTouchDevice: boolean;
   activeConfig: typeof DRIFT_CONFIG;
 }
 
-// Internal scene controller that manages camera position, scroll kinematics, and parallax
 function DriftCameraController({
   activeConfig,
+  activeSection,
   isTouchDevice,
   onHoveredCardChange,
   hoveredCardId,
@@ -26,10 +28,11 @@ function DriftCameraController({
   introElapsedTime,
 }: {
   activeConfig: typeof DRIFT_CONFIG;
+  activeSection: string;
   isTouchDevice: boolean;
-  onHoveredCardChange: (id: string | null) => void;
+  onHoveredCardChange: (card: PhotoCardItem | null) => void;
   hoveredCardId: string | null;
-  onClickCard: (title: string) => void;
+  onClickCard: (card: PhotoCardItem) => void;
   introElapsedTime: number;
 }) {
   const { camera, gl } = useThree();
@@ -43,8 +46,20 @@ function DriftCameraController({
   const touchStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const isDraggingTouchRef = useRef<boolean>(false);
 
-  // Spatial data for all 14 cards
-  const cardsData = useMemo(() => computeCardAnchors(PHOTO_CARDS), []);
+  // Compute Poisson-disc spatial anchors with dynamic config tuning
+  const cardsData = useMemo(() => {
+    return computeCardAnchors(PHOTO_CARDS, activeConfig);
+  }, [
+    activeConfig.cardSpreadMultiplier,
+    activeConfig.depthRangeMultiplier,
+    activeConfig.tiltVarianceMultiplier,
+    activeConfig.cardBaseWidth,
+    activeConfig.tiltSubtleDegMin,
+    activeConfig.tiltSubtleDegMax,
+    activeConfig.tiltStrongDegMin,
+    activeConfig.tiltStrongDegMax,
+    activeConfig.introStaggerMaxSec,
+  ]);
 
   useEffect(() => {
     const domElement = gl.domElement;
@@ -56,15 +71,18 @@ function DriftCameraController({
       const normX = (e.clientX / window.innerWidth) * 2 - 1;
       const normY = -(e.clientY / window.innerHeight) * 2 + 1;
 
-      // Parallax shifts camera opposite cursor
+      // Parallax shifts scene opposite cursor
       targetParallaxXRef.current = -normX * activeConfig.mouseParallaxStrengthX;
       targetParallaxYRef.current = -normY * activeConfig.mouseParallaxStrengthY;
     };
 
     // Wheel Scroll Listener: moves camera through depth smoothly
     const handleWheel = (e: WheelEvent) => {
+      // Don't move camera if scrolling on bottom wheel or UI modal
+      if ((e.target as HTMLElement)?.closest?.('[data-no-drift-scroll="true"]')) {
+        return;
+      }
       e.preventDefault();
-      // Delta normalization
       const deltaZ = e.deltaY * activeConfig.scrollSensitivity;
       targetZRef.current = THREE.MathUtils.clamp(
         targetZRef.current - deltaZ,
@@ -73,7 +91,7 @@ function DriftCameraController({
       );
     };
 
-    // Touch Event Listeners for Mobile: touch drag to move scene + swipe to scroll depth
+    // Touch Event Listeners for Mobile
     const handleTouchStart = (e: TouchEvent) => {
       if (e.touches.length === 1) {
         isDraggingTouchRef.current = true;
@@ -86,6 +104,9 @@ function DriftCameraController({
 
     const handleTouchMove = (e: TouchEvent) => {
       if (!isDraggingTouchRef.current || e.touches.length === 0) return;
+      if ((e.target as HTMLElement)?.closest?.('[data-no-drift-scroll="true"]')) {
+        return;
+      }
       e.preventDefault();
 
       const touch = e.touches[0];
@@ -101,11 +122,11 @@ function DriftCameraController({
       targetParallaxXRef.current += deltaX * 0.012;
       targetParallaxXRef.current = THREE.MathUtils.clamp(
         targetParallaxXRef.current,
-        -activeConfig.mouseParallaxStrengthX * 1.5,
-        activeConfig.mouseParallaxStrengthX * 1.5
+        -activeConfig.mouseParallaxStrengthX * 1.6,
+        activeConfig.mouseParallaxStrengthX * 1.6
       );
 
-      // Vertical drag scrolls camera forward / backward through the field
+      // Vertical drag scrolls camera through field
       const depthDelta = deltaY * activeConfig.scrollSensitivity * 1.8;
       targetZRef.current = THREE.MathUtils.clamp(
         targetZRef.current + depthDelta,
@@ -160,8 +181,8 @@ function DriftCameraController({
 
     // Gently aim camera toward center of the field
     camera.lookAt(
-      targetParallaxXRef.current * 0.25,
-      targetParallaxYRef.current * 0.25,
+      targetParallaxXRef.current * 0.22,
+      targetParallaxYRef.current * 0.22,
       camera.position.z - 10
     );
   });
@@ -172,11 +193,13 @@ function DriftCameraController({
         <PhotoCard3D
           key={cardData.item.id}
           cardData={cardData}
+          activeSection={activeSection}
           anyHovered={hoveredCardId !== null}
           hoveredCardId={hoveredCardId}
           onHoverChange={onHoveredCardChange}
           onClickCard={onClickCard}
-          elapsedIntroTime={introElapsedTime}
+          introElapsedTime={introElapsedTime}
+          config={activeConfig}
         />
       ))}
     </group>
@@ -184,14 +207,16 @@ function DriftCameraController({
 }
 
 export function PhotoDriftCanvas({
-  onCardClickNotice,
+  activeSection,
+  onHoveredCardChange,
+  onSelectCardDetail,
   isTouchDevice,
   activeConfig,
 }: PhotoDriftCanvasProps) {
   const [hoveredCardId, setHoveredCardId] = useState<string | null>(null);
   const [introElapsed, setIntroElapsed] = useState(0);
 
-  // 1.5s intro timer progress
+  // Master intro timer
   useEffect(() => {
     let animId: number;
     const start = performance.now();
@@ -199,14 +224,29 @@ export function PhotoDriftCanvas({
     const loop = (now: number) => {
       const elapsed = (now - start) / 1000;
       setIntroElapsed(elapsed);
-      if (elapsed < activeConfig.introDurationSec + 0.5) {
+      if (
+        elapsed <
+        activeConfig.taglineOnlyDurationSec +
+          activeConfig.cardsFadeInDurationSec +
+          activeConfig.introStaggerMaxSec +
+          0.5
+      ) {
         animId = requestAnimationFrame(loop);
       }
     };
 
     animId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animId);
-  }, [activeConfig.introDurationSec]);
+  }, [
+    activeConfig.taglineOnlyDurationSec,
+    activeConfig.cardsFadeInDurationSec,
+    activeConfig.introStaggerMaxSec,
+  ]);
+
+  const handleHoverChange = (card: PhotoCardItem | null) => {
+    setHoveredCardId(card ? card.id : null);
+    onHoveredCardChange(card);
+  };
 
   return (
     <div className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing">
@@ -215,7 +255,7 @@ export function PhotoDriftCanvas({
           position: [0, 0, activeConfig.initialCameraZ],
           fov: activeConfig.cameraFov,
           near: 0.1,
-          far: 120,
+          far: 140,
         }}
         gl={{
           antialias: true,
@@ -224,17 +264,17 @@ export function PhotoDriftCanvas({
         }}
         onCreated={({ gl, scene }) => {
           gl.setClearColor(0xf5f4f1, 1);
-          // Match horizon fog seamlessly to warm off-white background [#F5F4F1]
-          scene.fog = new THREE.Fog(0xf5f4f1, 35, 75);
+          scene.fog = new THREE.Fog(0xf5f4f1, 38, 85);
         }}
       >
         <ambientLight intensity={1.0} />
         <DriftCameraController
           activeConfig={activeConfig}
+          activeSection={activeSection}
           isTouchDevice={isTouchDevice}
           hoveredCardId={hoveredCardId}
-          onHoveredCardChange={setHoveredCardId}
-          onClickCard={onCardClickNotice}
+          onHoveredCardChange={handleHoverChange}
+          onClickCard={onSelectCardDetail}
           introElapsedTime={introElapsed}
         />
       </Canvas>
