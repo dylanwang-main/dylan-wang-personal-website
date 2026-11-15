@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://dylan-wang-personal-website.vercel.app/sitemap.xml

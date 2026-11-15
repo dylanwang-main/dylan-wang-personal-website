@@ -1,141 +1,89 @@
 /**
- * @license
- * SPDX-License-Identifier: Apache-2.0
+ * Routes. The home page (3D drift) is lazy-loaded; everything else is plain pages.
  */
+import { AnimatePresence, motion } from 'motion/react';
+import { Suspense, lazy } from 'react';
+import { Cursor } from './components/Cursor';
+import { IndexMenu } from './components/IndexMenu';
+import { PageShell } from './components/PageShell';
+import { AboutPage } from './pages/AboutPage';
+import { ArchivePage } from './pages/ArchivePage';
+import { ContentDetail, ContentPage } from './pages/ContentPages';
+import { LabPage } from './pages/LabPage';
+import { ChangelogPage, ColophonPage, NotFound } from './pages/MetaPages';
+import { NowPage } from './pages/NowPage';
+import { WorkDetail, WorkPage } from './pages/WorkPages';
+import { matchPath, navigate, usePath } from './router';
+import { useEffect } from 'react';
 
-import { useEffect, useState } from 'react';
-import { CustomCursor } from './components/CustomCursor';
-import { DetailModals } from './components/DetailModals';
-import { HUDOverlay } from './components/HUDOverlay';
-import { PhotoDriftCanvas } from './components/PhotoDriftCanvas';
-import { ReducedMotionGrid } from './components/ReducedMotionGrid';
-import { SectionWheel } from './components/SectionWheel';
-import { DRIFT_CONFIG, PhotoCardItem, SECTIONS, SectionName } from './config';
+const DriftHome = lazy(() => import('./drift/DriftHome'));
+
+function Page({ path }: { path: string }) {
+  let m: Record<string, string> | null;
+  if (path === '/work') return <WorkPage />;
+  if ((m = matchPath('/work/:slug', path))) return <WorkDetail slug={m.slug} />;
+  if (path === '/content') return <ContentPage />;
+  if ((m = matchPath('/content/:slug', path))) return <ContentDetail slug={m.slug} />;
+  if (path === '/lab') return <LabPage />;
+  if (path === '/archive') return <ArchivePage />;
+  if (path === '/about') return <AboutPage />;
+  if (path === '/now') return <NowPage />;
+  if (path === '/colophon') return <ColophonPage />;
+  if (path === '/changelog') return <ChangelogPage />;
+  return <NotFound />;
+}
+
+/** Old or alternate URLs that should land somewhere useful */
+const REDIRECTS: Record<string, string> = {
+  '/uses': '/archive#gear',
+  '/projects': '/work',
+  '/videos': '/content',
+  '/contact': '/about#hello',
+};
+
+function Splash() {
+  return <div className="fixed inset-0 bg-paper" />;
+}
 
 export default function App() {
-  // Tunable feel configuration state initialized with default values from config.ts
-  const [activeConfig, setActiveConfig] = useState<typeof DRIFT_CONFIG>(DRIFT_CONFIG);
-
-  // Active section selection (controlled by bottom wheel, arrow keys, or grid tabs)
-  const [activeSection, setActiveSection] = useState<SectionName>(SECTIONS[0]);
-
-  // Modals state
-  const [openedSection, setOpenedSection] = useState<SectionName | null>(null);
-  const [openedCard, setOpenedCard] = useState<PhotoCardItem | null>(null);
-
-  // Hovered card for custom cursor & hover caption
-  const [hoveredCard, setHoveredCard] = useState<PhotoCardItem | null>(null);
-
-  // Accessible reduced-motion detection
-  const [isReducedMotion, setIsReducedMotion] = useState<boolean>(() => {
-    if (typeof window !== 'undefined' && window.matchMedia) {
-      return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    }
-    return false;
-  });
-
-  // Touch device detection
-  const [isTouchDevice, setIsTouchDevice] = useState<boolean>(false);
-  const [isMobileScreen, setIsMobileScreen] = useState<boolean>(false);
-
-  // Last clicked title notification
-  const [lastClickedTitle, setLastClickedTitle] = useState<string | null>(null);
+  const path = usePath();
 
   useEffect(() => {
-    const checkViewport = () => {
-      setIsTouchDevice('ontouchstart' in window || navigator.maxTouchPoints > 0);
-      setIsMobileScreen(window.innerWidth < 640);
-    };
-    checkViewport();
-    window.addEventListener('resize', checkViewport);
+    if (REDIRECTS[path]) navigate(REDIRECTS[path], { replace: true });
+  }, [path]);
 
-    // Listen to prefers-reduced-motion OS changes
-    if (window.matchMedia) {
-      const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
-      const handleChange = (e: MediaQueryListEvent) => {
-        setIsReducedMotion(e.matches);
-      };
-      mediaQuery.addEventListener('change', handleChange);
-      return () => {
-        mediaQuery.removeEventListener('change', handleChange);
-        window.removeEventListener('resize', checkViewport);
-      };
+  // Scroll to #hash targets on first load
+  useEffect(() => {
+    if (window.location.hash) {
+      const id = decodeURIComponent(window.location.hash.slice(1));
+      requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView());
     }
-
-    return () => window.removeEventListener('resize', checkViewport);
   }, []);
 
-  // Card click handler: logs to console, shows toast, and opens card detail overlay
-  const handleCardClick = (card: PhotoCardItem) => {
-    setLastClickedTitle(card.title);
-    setOpenedCard(card);
-    setTimeout(() => {
-      setLastClickedTitle((curr) => (curr === card.title ? null : curr));
-    }, 3200);
-  };
-
-  const handleResetConfig = () => {
-    setActiveConfig(DRIFT_CONFIG);
-  };
-
-  const handleToggleReducedMotion = () => {
-    setIsReducedMotion((prev) => !prev);
-  };
-
   return (
-    <main
-      className="relative w-screen h-screen overflow-hidden select-none"
-      style={{ backgroundColor: '#F5F4F1' }}
-    >
-      {/* CUSTOM CURSOR & HOVER CAPTION */}
-      <CustomCursor hoveredCard={hoveredCard} isTouchDevice={isTouchDevice} />
-
-      {/* 3D DRIFT FIELD OR ACCESSIBLE 2D GRID */}
-      {isReducedMotion ? (
-        <ReducedMotionGrid
-          activeSection={activeSection}
-          onSelectSection={setActiveSection}
-          onOpenCardDetail={handleCardClick}
-        />
+    <>
+      <Cursor />
+      <IndexMenu />
+      <div className="paper-grain" aria-hidden="true" />
+      {path === '/' ? (
+        <Suspense fallback={<Splash />}>
+          <DriftHome />
+        </Suspense>
       ) : (
-        <PhotoDriftCanvas
-          activeSection={activeSection}
-          onHoveredCardChange={setHoveredCard}
-          onSelectCardDetail={handleCardClick}
-          isTouchDevice={isTouchDevice}
-          activeConfig={activeConfig}
-        />
+        <PageShell>
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={path}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.32, ease: [0.2, 0.8, 0.2, 1] }}
+            >
+              <Page path={path} />
+            </motion.div>
+          </AnimatePresence>
+        </PageShell>
       )}
-
-      {/* BOTTOM SECTION WHEEL (Large thin circular wheel, ~60% visible at bottom) */}
-      {!isReducedMotion && (
-        <SectionWheel
-          activeSection={activeSection}
-          onSelectSection={setActiveSection}
-          onOpenSectionDetail={(section) => setOpenedSection(section)}
-          config={activeConfig}
-          isMobile={isMobileScreen}
-        />
-      )}
-
-      {/* MINIMALIST TYPOGRAPHIC HUD OVERLAY */}
-      <HUDOverlay
-        lastClickedTitle={lastClickedTitle}
-        config={activeConfig}
-        onChangeConfig={setActiveConfig}
-        onResetConfig={handleResetConfig}
-        isReducedMotion={isReducedMotion}
-        onToggleReducedMotion={handleToggleReducedMotion}
-        isTouchDevice={isTouchDevice}
-      />
-
-      {/* FULL-SCREEN OVERLAYS FOR SECTION ARCHIVE & CARD DETAIL */}
-      <DetailModals
-        selectedSection={openedSection}
-        onCloseSection={() => setOpenedSection(null)}
-        selectedCard={openedCard}
-        onCloseCard={() => setOpenedCard(null)}
-      />
-    </main>
+    </>
   );
 }
