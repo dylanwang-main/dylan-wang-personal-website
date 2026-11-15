@@ -1,29 +1,70 @@
 @import "tailwindcss";
 
-@layer base {
-  :root {
-    --bg-color: #F5F4F1;
-    --text-color: #1a1a1a;
-  }
+/* ==========================================================================
+   Design tokens. Change the palette or fonts here and the whole site follows.
+   ========================================================================== */
+@theme {
+  --color-paper: #F5F4F1;
+  --color-paper-2: #EEEBE4;
+  --color-paper-3: #E5E1D7;
+  --color-ink: #1A1A1A;
+  --color-ink-2: #4A4741;
+  --color-ink-3: #8A857B;
+  --color-line: #D9D4C8;
+  --color-rust: #B4532A;
+  --color-moss: #4F5D3A;
+  --color-ochre: #C99A3E;
+  --color-sky: #5B7590;
 
-  html, body, #root {
-    width: 100%;
-    height: 100%;
+  --font-serif: "Instrument Serif", ui-serif, Georgia, serif;
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@layer base {
+  html,
+  body {
     margin: 0;
     padding: 0;
-    background-color: #F5F4F1;
-    color: #1a1a1a;
-    overflow: hidden;
+    background-color: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    touch-action: none;
-    user-select: none;
-    -webkit-user-select: none;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: var(--color-ink);
+    color: var(--color-paper);
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  :focus-visible {
+    outline: 1.5px solid var(--color-ink);
+    outline-offset: 3px;
+    border-radius: 2px;
   }
 }
 
-/* Hide the system cursor everywhere (including over buttons, sliders, the wheel and overlays).
-   CustomCursor adds this class to <html> while it is drawing the replacement. */
+/* The home page is a fixed, full-screen 3D scene. Inner pages scroll normally. */
+html.is-drift,
+html.is-drift body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+html.is-drift #root {
+  height: 100%;
+}
+
+/* Hide the system cursor everywhere while the custom cursor is drawing its replacement. */
 html.has-custom-cursor,
 html.has-custom-cursor *,
 html.has-custom-cursor *::before,
@@ -31,12 +72,102 @@ html.has-custom-cursor *::after {
   cursor: none !important;
 }
 
-/* Custom subtle scrollbar if needed */
+/* Paper grain. A tiny SVG noise tile over everything, so the cream feels like paper. */
+.paper-grain {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  opacity: 0.07;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.1  0 0 0 0 0.09  0 0 0 0 0.08  0 0 0 0.9 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+
+/* Floating text over the 3D scene gets a soft paper halo so it always reads */
+.paper-halo {
+  text-shadow: 0 0 2px #F5F4F1, 0 0 8px #F5F4F1, 0 0 18px #F5F4F1, 0 0 28px #F5F4F1;
+}
+
+/* Long-form text on inner pages */
+.prose-dw p {
+  margin: 0 0 1.05em;
+  line-height: 1.65;
+}
+.prose-dw p:last-child {
+  margin-bottom: 0;
+}
+.prose-dw a,
+a.link-dw {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--color-ink-3);
+  transition: text-decoration-color 0.2s;
+}
+.prose-dw a:hover,
+a.link-dw:hover {
+  text-decoration-color: var(--color-ink);
+}
+
+/* Draft markers: dotted underline on copy Dylan still needs to replace (see content/site.ts) */
+.draft-copy {
+  background-image: linear-gradient(to right, var(--color-rust) 40%, transparent 0%);
+  background-position: 0 100%;
+  background-size: 4px 1px;
+  background-repeat: repeat-x;
+  padding-bottom: 1px;
+}
+
+/* Thin scrollbars */
 ::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.15);
-  border-radius: 2px;
+  background: rgba(26, 26, 26, 0.18);
+  border-radius: 3px;
+}
+
+/* Visually hidden but readable by screen readers */
+.sr-only-dw {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes dw-float {
+  0%,
+  100% {
+    transform: rotate(-6deg) translateY(0);
+  }
+  50% {
+    transform: rotate(-3.5deg) translateY(-12px);
+  }
+}
+
+@keyframes dw-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
